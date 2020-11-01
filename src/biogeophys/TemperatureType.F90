@@ -728,7 +728,11 @@ contains
                   end if
                end if
             else
-               this%t_soisno_col(c,1:nlevgrnd) = 274._r8
+!hl, lc: set initial soil T to freezing T     
+               this%t_soisno_col(c,1:nlevgrnd) = 250._r8
+!               this%t_soisno_col(c,1:nlevgrnd) = 274._r8
+!hl, lc
+
 
             endif
          endif

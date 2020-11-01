@@ -229,6 +229,14 @@ module clm_varctl
   logical, public            :: use_fates_inventory_init = .false.     ! true => initialize fates from inventory
   character(len=256), public :: fates_inventory_ctrl_filename = ''     ! filename for inventory control
 
+!lc
+  !----------------------------------------------------------
+  !  excess ice switches
+  !----------------------------------------------------------
+
+  logical, public :: use_excess_ice = .false.            ! true => use excess ice physics
+!lc
+
   !----------------------------------------------------------
   !  LUNA switches		
   !----------------------------------------------------------

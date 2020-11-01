@@ -168,12 +168,17 @@ contains
     integer :: j, fc, c
     real(r8) :: vol_ice(bounds%begc:bounds%endc,1:nlevsoi) !partial volume of ice lens in layer
     real(r8) :: icefrac_orig ! original formulation for icefrac
-
+!hl,lc
+    real(r8) :: dz2(bounds%begc:bounds%endc,1:nlevsoi)   ! used in computing excess_ice effects
+!hl,lc
     character(len=*), parameter :: subname = 'SetSoilWaterFractions'
     !-----------------------------------------------------------------------
 
     associate( &
-         dz               =>    col%dz                              , & ! Input:  [real(r8) (:,:) ]  layer depth (m)                                 
+!hl,lc
+      excess_ice       =>    waterstatebulk_inst%excess_ice_col      , & ! Input:  [real(r8) (:)   ]  excess soil ice
+!hl,lc
+      dz               =>    col%dz                              , & ! Input:  [real(r8) (:,:) ]  layer depth (m)                                 
 
          watsat           =>    soilstate_inst%watsat_col           , & ! Input:  [real(r8) (:,:) ]  volumetric soil water at saturation (porosity)
          eff_porosity     =>    soilstate_inst%eff_porosity_col     , & ! Output: [real(r8) (:,:) ]  effective porosity = porosity - vol_ice
@@ -192,7 +197,11 @@ contains
 
           ! Porosity of soil, partial volume of ice and liquid, fraction of ice in each layer,
           ! fractional impermeability
-          vol_ice(c,j) = min(watsat(c,j), h2osoi_ice(c,j)/(dz(c,j)*denice))
+!hl
+          dz2(c,j)   = dz(c,j) + excess_ice(c,j)/denice
+          vol_ice(c,j) = min(watsat(c,j), (h2osoi_ice(c,j)+excess_ice(c,j))/(dz2(c,j)*denice))
+          !vol_ice(c,j) = min(watsat(c,j), h2osoi_ice(c,j)/(dz(c,j)*denice))
+!hl     
           eff_porosity(c,j) = max(0.01_r8,watsat(c,j)-vol_ice(c,j))
           icefrac(c,j) = min(1._r8,vol_ice(c,j)/watsat(c,j))
 

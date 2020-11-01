@@ -669,6 +669,11 @@ Full pathname to the inventory initialization control file.
 (Required, if use_fates_inventory_init=T)
 </entry>
 
+<entry id="use_excess_ice" type="logical" category="physics"
+        group="clm_inparm" valid_values="" value=".false.">
+Toggle to turn on the excess ice physics, added by Lei Cai
+</entry>
+
 <entry id="use_luna" type="logical" category="physics"
         group="clm_inparm" valid_values="" value=".false.">
 Toggle to turn on the LUNA model, to effect Photosynthesis by leaf Nitrogen

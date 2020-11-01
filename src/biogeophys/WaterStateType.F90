@@ -13,7 +13,9 @@ module WaterStateType
   use abortutils     , only : endrun
   use decompMod      , only : bounds_type
   use decompMod      , only : BOUNDS_SUBGRID_PATCH, BOUNDS_SUBGRID_COLUMN
-  use clm_varctl     , only : use_bedrock, iulog
+!lc
+  use clm_varctl     , only : use_bedrock, iulog, use_excess_ice, fsurdat
+!lc
   use clm_varpar     , only : nlevgrnd, nlevsoi, nlevurb, nlevsno   
   use clm_varcon     , only : spval, namec
   use LandunitType   , only : lun                
@@ -49,6 +51,12 @@ module WaterStateType
 
      real(r8) :: aquifer_water_baseline                ! baseline value for water in the unconfined aquifer (wa_col) for this bulk / tracer (mm)
 
+!hl,lc
+     real(r8), pointer :: excess_ice_col         (:,:) ! col excess ice lens/(kg/m2) (new) (-nlevsno+1:nlevgrnd)
+     real(r8), pointer :: init_exice             (:,:) ! initial value of col excess ice lens/(kg/m2)
+     real(r8), pointer :: exice_melt_lev         (:,:)   ! excess ice melting (m) (new)
+     real(r8), pointer :: exice_melt             (:)   ! column excess ice melting (m) (new)
+!hl,lc
    contains
 
      procedure, public  :: Init
@@ -144,7 +152,23 @@ contains
     call AllocateVar1d(var = this%dynbal_baseline_ice_col, name = 'dynbal_baseline_ice_col', &
          container = tracer_vars, &
          bounds = bounds, subgrid_level = BOUNDS_SUBGRID_COLUMN)
-
+!lc
+         call AllocateVar2d(var = this%excess_ice_col, name = 'excess_ice_col', &
+         container = tracer_vars, &
+         bounds = bounds, subgrid_level = BOUNDS_SUBGRID_COLUMN, &
+         dim2beg = -nlevsno+1, dim2end = nlevgrnd)
+    call AllocateVar2d(var = this%init_exice, name = 'init_exice', &
+         container = tracer_vars, &
+         bounds = bounds, subgrid_level = BOUNDS_SUBGRID_COLUMN, &
+         dim2beg = -nlevsno+1, dim2end = nlevgrnd)
+    call AllocateVar2d(var = this%exice_melt_lev, name = 'exice_melt_lev', &
+         container = tracer_vars, &
+         bounds = bounds, subgrid_level = BOUNDS_SUBGRID_COLUMN, &
+         dim2beg = -nlevsno+1, dim2end = nlevgrnd)	
+	call AllocateVar1d(var = this%exice_melt, name = 'exice_melt', &
+         container = tracer_vars, &
+         bounds = bounds, subgrid_level = BOUNDS_SUBGRID_COLUMN)	
+!lc		
   end subroutine InitAllocate
 
   !------------------------------------------------------------------------
@@ -248,7 +272,17 @@ contains
          avgflag='A', &
          long_name=this%info%lname('water in the unconfined aquifer (natural vegetated and crop landunits only)'), &
          ptr_col=this%wa_col, l2g_scale_type='veg')
+!hl,lc
+         this%excess_ice_col(begc:endc,:) = spval
+         call hist_addfld2d (fname='EXCESS_ICE',  units='kg/m2', type2d='levgrnd', &
+              avgflag='A', long_name='excess soil ice (vegetated landunits only)', &
+              ptr_col=this%excess_ice_col, l2g_scale_type='veg')
 
+         this%exice_melt(begc:endc) = spval
+         call hist_addfld1d (fname='EXICE_MELT',  units='m', &
+              avgflag='A', long_name='melting of excess soil ice (vegetated landunits only)', &
+              ptr_col=this%exice_melt, l2g_scale_type='veg')
+!hl,lc
 
 
     ! (rgk 02-02-2017) There is intentionally no entry  here for stored plant water
@@ -275,6 +309,15 @@ contains
     use column_varcon   , only : icol_road_perv, icol_road_imperv
     use clm_varcon      , only : denice, denh2o, bdsno 
     use clm_varcon      , only : tfrz, aquifer_water_baseline
+!lc
+    use spmdMod         , only : masterproc
+	 use fileutils       , only : getfil
+!lc
+!hl,lc: add grlnd
+    use clm_varcon      , only : h2osno_max, tfrz, spval, pc, grlnd
+!hl: important to include ncd_pio_openfile/closefile here
+    use ncdio_pio       , only : file_desc_t, ncd_io, ncd_pio_openfile, ncd_pio_closefile
+!hl,lc
     !
     ! !ARGUMENTS:
     class(waterstate_type), intent(inout) :: this
@@ -285,9 +328,18 @@ contains
     logical               , intent(in)    :: use_aquifer_layer ! whether an aquifer layer is used in this run
     !
     ! !LOCAL VARIABLES:
-    integer            :: c,j,l,nlevs 
+!lc
+    integer            :: g,c,j,l,nlevs 
+!lc 
     integer            :: nbedrock
     real(r8)           :: ratio
+!hl,lc
+    character(len=256) :: fexice
+    real(r8) ,pointer  :: exice_in(:)   ! read in - excess_ice
+	character(len=256)    :: locfn        ! local file name
+    type(file_desc_t)     :: ncid         ! netcdf id
+	logical           :: readvar              ! true => variable is on dataset
+!hl,lc
     !-----------------------------------------------------------------------
 
     SHR_ASSERT_ALL_FL((ubound(h2osno_input_col)     == (/bounds%endc/))          , sourcefile, __LINE__)
@@ -396,6 +448,71 @@ contains
             end do
          end if
       end do
+!hl,scs,lc
+      !--------------------------------------------
+      ! Set Excess Ice
+      !--------------------------------------------
+      if (use_excess_ice) then
+         write(iulog,*) 'use excess ice physics'
+          this%excess_ice_col(bounds%begc:bounds%endc,-nlevsno+1:) = spval
+    
+        ! Open surface dataset to read in data below
+    
+          call getfil(fsurdat, locfn, 0)
+          call ncd_pio_openfile (ncid, locfn, 0)
+          allocate(exice_in(bounds%begg:bounds%endg))
+          exice_in(:) = 0.0
+          call ncd_io(ncid=ncid, varname='excess_ice', flag='read', data=exice_in, dim1name=grlnd, readvar=readvar)
+          if (.not. readvar) then
+             if (masterproc) then
+                write(iulog,*) 'excess_ice not found in surface data set.'
+     !           write(iulog,*) 'Excess ice will be initialized to global constant value.'
+             end if
+     !        exice_in(:) = 0.1
+          end if
+          call ncd_pio_closefile(ncid)
+    
+    !scs: exice is initialized to nan so 're-initialize' to zero for cold start
+          this%excess_ice_col = 0.0
+    
+    !      exice_in(:) = 0.0
+    
+          do c = bounds%begc,bounds%endc
+             g = col%gridcell(c)
+             l = col%landunit(c)
+             if (.not. lun%lakpoi(l)) then  !not lake
+                if (lun%itype(l) == istsoil .or. lun%itype(l) == istcrop) then
+                   nlevs = nlevgrnd
+                   do j = 1, nlevs
+    !                  if (col%zi(c,j) >= 1._r8 .and. col%zi(c,j) <= 3._r8) then
+                      if (col%zi(c,j) <= 4._r8 .and. exice_in(g) < 1.e30) then
+                         this%excess_ice_col(c,j) = col%dz(c,j)*denice*(exice_in(g)/100._r8)
+                      else
+                         this%excess_ice_col(c,j) = 0.0_r8
+                      endif
+    !hl2:TODO check this line
+    ! initializing init_exice = 0 and than setting it equal to excess_ice_col (initial
+    ! excess ice value)
+                      this%init_exice(c,j) = 0.0_r8
+                      this%init_exice(c,j) = this%excess_ice_col(c,j)
+    !         write(iulog,*)'excess_ice_col(kg/m2)',this%excess_ice_col(c,j)
+    !         write(iulog,*)'init_exice(kg/m2)',this%init_exice(c,j)
+    
+    !hl2: excess_ice_col, init_exice works
+                   end do
+                endif
+             endif
+          enddo
+          deallocate(exice_in)
+       else
+         this%init_exice(c,j) = 0.0_r8
+       endif
+    !hl,scs
+    !hl2: need to make sum of exice_melt_lev and convert it to m instead of kg/m2 to
+    !make exice_melt
+          this%exice_melt(:) = 0.0_r8
+    !hl2: the line above was moved to SoilTemperatureMod.F90
+!hl,scs,lc
 
 
       !--------------------------------------------
@@ -557,7 +674,20 @@ contains
          long_name=this%info%lname('liquid water'), &
          units='kg/m2', &
          interpinic_flag='interp', readvar=readvar, data=this%h2osoi_liq_col)
+!lc--adding exice variables into restart files
+if (use_excess_ice) then
 
+    call restartvar(ncid=ncid, flag=flag, varname='EXCESS_ICE', xtype=ncd_double,  &
+         dim1name='column', dim2name='levtot', switchdim=.true., &
+         long_name='excess soil ice (vegetated landunits only)', units='kg/m2', &
+         interpinic_flag='interp', readvar=readvar, data=this%excess_ice_col)
+		 
+    call restartvar(ncid=ncid, flag=flag, varname='EXICE_MELT', xtype=ncd_double,  &
+         dim1name='column', &
+         long_name='melting of excess soil ice (vegetated landunits only)', units='m', &
+         interpinic_flag='interp', readvar=readvar, data=this%exice_melt)
+end if
+!lc	    
     call restartvar(ncid=ncid, flag=flag, &
          varname=this%info%fname('H2OSOI_ICE'), &
          xtype=ncd_double,   &

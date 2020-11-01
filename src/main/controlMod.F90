@@ -227,7 +227,11 @@ contains
           use_fates_inventory_init,                     &
           fates_inventory_ctrl_filename
 
-
+!lc
+!excess ice Flags
+          namelist /clm_inparm/ use_excess_ice
+!lc
+          
     ! CLM 5.0 nitrogen flags
     namelist /clm_inparm/ use_flexibleCN, use_luna
 
